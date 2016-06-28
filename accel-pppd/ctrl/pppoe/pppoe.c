@@ -102,6 +102,7 @@ static int conf_called_sid;
 static int conf_cookie_timeout;
 static const char *conf_vlan_name;
 static int conf_vlan_timeout;
+static int conf_proxyarp = 0;
 
 static mempool_t conn_pool;
 static mempool_t pado_pool;
@@ -346,6 +347,7 @@ static struct pppoe_conn_t *allocate_channel(struct pppoe_serv_t *serv, const ui
 	conn->ctrl.name = "pppoe";
 	conn->ctrl.ifname = serv->ifname;
 	conn->ctrl.mppe = conf_mppe;
+	conn->ctrl.proxyarp = conf_proxyarp;
 
 	if (ppp_max_payload > ETH_DATA_LEN - 8)
 		conn->ctrl.max_mtu = min(ppp_max_payload, serv->mtu - 8);
@@ -1999,6 +2001,10 @@ static void load_config(void)
 		conf_vlan_timeout = atoi(opt);
 	else
 		conf_vlan_timeout = 60;
+
+	opt = conf_get_opt("pppoe", "proxy-arp") ? : conf_get_opt("ppp", "proxy-arp");
+	if (opt && atoi(opt) >= 0)
+		conf_proxyarp = atoi(opt) > 0;
 
 	load_vlan_mon(s);
 }

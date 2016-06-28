@@ -61,6 +61,7 @@ static int conf_echo_failure = 3;
 static int conf_verbose = 0;
 static int conf_mppe = MPPE_UNSET;
 static const char *conf_ip_pool;
+static int conf_proxyarp = 0;
 
 static mempool_t conn_pool;
 
@@ -689,6 +690,7 @@ static int pptp_connect(struct triton_md_handler_t *h)
 		conn->ctrl.name = "pptp";
 		conn->ctrl.ifname = "";
 		conn->ctrl.mppe = conf_mppe;
+		conn->ctrl.proxyarp = conf_proxyarp;
 
 		conn->ctrl.calling_station_id = _malloc(17);
 		conn->ctrl.called_station_id = _malloc(17);
@@ -777,6 +779,10 @@ static void load_config(void)
 	}
 
 	conf_ip_pool = conf_get_opt("pptp", "ip-pool");
+
+	opt = conf_get_opt("pptp", "proxy-arp") ? : conf_get_opt("ppp", "proxy-arp");
+	if (opt && atoi(opt) >= 0)
+		conf_proxyarp = atoi(opt) > 0;
 
 	switch (iprange_check_activation()) {
 	case IPRANGE_DISABLED:

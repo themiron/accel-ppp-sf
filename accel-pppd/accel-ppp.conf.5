@@ -198,6 +198,9 @@ This should reduce kernel-level interface creation/deletion rate lack.
 .TP
 .BI "unit-preallocate=" 0|1
 If set to 1 then allocate ppp unit (interface) before authorization, so Nas-Port and Nas-Port-Id would be defined in Access-Request phase.
+.TP
+.BI "proxy-arp=" 0|1
+Specify whether accel-ppp should reply to arp requests on a network interface on the same subnet as the remote host.
 .SH [ipoe]
 .TP
 .BI "verbose=" n
@@ -460,6 +463,9 @@ Specifies maximum number of echo-requests may be sent without valid echo-reply, 
 Timeout waiting reply from client in seconds (default 5).
 .TP
 .BI "mppe=" deny|allow|prefer|require
+.TP
+.BI "proxy-arp=" 0|1
+Overrides [ppp] parameter, if set.
 .SH [pppoe]
 .br
 Configuration of PPPoE module.
@@ -516,6 +522,9 @@ Specifies whether to handle TR101 tags.
 Specifies overall limit of PADI packets to reply in 1 second period (default 0 - unlimited). Rate of per-mac PADI packets is limited to no more than 1 packet per second.
 .TP
 .BI "mppe=" deny|allow|prefer|require
+.TP
+.BI "proxy-arp=" 0|1
+Overrides [ppp] parameter, if set.
 .SH [l2tp]
 .br
 Configuration of L2TP module.
@@ -603,6 +612,9 @@ reply (SCCRP). Default value is 0.
 .BI "ppp-max-mtu=" n
 Set the maximun MTU value that can be negociated for PPP over L2TP
 sessions. Default value is 1420.
+.TP
+.BI "proxy-arp=" 0|1
+Overrides [ppp] parameter, if set.
 .SH [radius]
 .br
 Configuration of RADIUS module.

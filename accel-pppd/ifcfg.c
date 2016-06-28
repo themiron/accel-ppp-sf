@@ -9,7 +9,9 @@
 #include <arpa/inet.h>
 #include <sys/socket.h>
 #include <sys/ioctl.h>
+#include <net/if_arp.h>
 #include <linux/route.h>
+#include <ifaddrs.h>
 #include "linux_ppp.h"
 
 #include "triton.h"
@@ -27,6 +29,52 @@ struct in6_ifreq {
         __u32           ifr6_prefixlen;
         int             ifr6_ifindex;
 };
+
+static int find_hwaddr(struct sockaddr_in *inaddr, struct sockaddr *hwaddr, char *ifname, int ifname_len)
+{
+	struct ifaddrs *ifaddr, *ifa;
+	struct ifreq ifr;
+	__u32 ipaddr, addr, mask;
+	__u32 bestmask = 0;
+	int found = 0;
+
+	if (getifaddrs(&ifaddr) < 0)
+		return -1;
+
+	memset(&ifr, 0, sizeof(ifr));
+	ipaddr = inaddr->sin_addr.s_addr;
+	for (ifa = ifaddr; ifa; ifa = ifa->ifa_next) {
+		if (ifa->ifa_addr == NULL || ifa->ifa_addr->sa_family != AF_INET)
+			continue;
+		if ((ifa->ifa_flags ^ (IFF_UP | IFF_BROADCAST)) &
+		    (IFF_UP | IFF_BROADCAST | IFF_POINTOPOINT | IFF_LOOPBACK | IFF_NOARP))
+			continue;
+
+		addr = ((struct sockaddr_in *)ifa->ifa_addr)->sin_addr.s_addr;
+		mask = ((struct sockaddr_in *)ifa->ifa_netmask)->sin_addr.s_addr;
+		if (((ipaddr ^ addr) & mask) != 0)
+			continue;
+
+		if (mask >= bestmask) {
+			strncpy(ifr.ifr_name, ifa->ifa_name, sizeof(ifr.ifr_name));
+			bestmask = mask;
+			found = 1;
+		}
+	}
+	freeifaddrs(ifaddr);
+
+	if (!found)
+		return 0;
+
+	if (net->sock_ioctl(SIOCGIFHWADDR, &ifr) < 0)
+		return -1;
+
+	memcpy(hwaddr, &ifr.ifr_hwaddr, sizeof(struct sockaddr));
+	strncpy(ifname, ifr.ifr_name, ifname_len);
+	strsep(&ifname, ":");
+
+	return 1;
+}
 
 static void devconf(struct ap_session *ses, const char *attr, const char *val)
 {
@@ -85,7 +133,9 @@ void __export ap_session_accounting_started(struct ap_session *ses)
 	struct in6_ifreq ifr6;
 	struct npioctl np;
 	struct sockaddr_in addr;
+	struct arpreq arpreq;
 	struct ppp_t *ppp;
+	int ret;
 
 	if (ses->stop_time)
 		return;
@@ -145,6 +195,23 @@ void __export ap_session_accounting_started(struct ap_session *ses)
 
 					if (net->sock_ioctl(SIOCSIFDSTADDR, &ifr))
 						log_ppp_error("failed to set peer IPv4 address: %s\n", strerror(errno));
+				}
+
+				if (ses->ctrl->proxyarp) {
+					memset(&arpreq, 0, sizeof(arpreq));
+					arpreq.arp_flags = ATF_PERM | ATF_PUBL;
+
+					addr.sin_addr.s_addr = ses->ipv4->peer_addr;
+					memcpy(&arpreq.arp_pa, &addr, sizeof(addr));
+
+					ret = find_hwaddr(&addr, &arpreq.arp_ha, arpreq.arp_dev, sizeof(arpreq.arp_dev));
+					if (ret > 0) {
+						ret = net->sock_ioctl(SIOCSARP, (caddr_t)&arpreq);
+						if (ret == 0)
+							ses->proxyarp = strdup(arpreq.arp_dev);
+					}
+					if (ret < 0)
+						log_ppp_error("failed to add proxy arp: %s\n", strerror(errno));
 				}
 			}
 
@@ -223,6 +290,7 @@ void __export ap_session_ifdown(struct ap_session *ses)
 	struct sockaddr_in addr;
 	struct in6_ifreq ifr6;
 	struct ipv6db_addr_t *a;
+	struct arpreq arpreq;
 
 	if (ses->ifindex == -1)
 		return;
@@ -238,6 +306,21 @@ void __export ap_session_ifdown(struct ap_session *ses)
 		addr.sin_family = AF_INET;
 		memcpy(&ifr.ifr_addr,&addr,sizeof(addr));
 		net->sock_ioctl(SIOCSIFADDR, &ifr);
+
+		if (ses->proxyarp) {
+			memset(&arpreq, 0, sizeof(arpreq));
+			arpreq.arp_flags = ATF_PERM | ATF_PUBL;
+
+			addr.sin_addr.s_addr = ses->ipv4->peer_addr;
+			memcpy(&arpreq.arp_pa, &addr, sizeof(addr));
+			strncpy(arpreq.arp_dev, ses->proxyarp, sizeof(arpreq.arp_dev));
+
+			free(ses->proxyarp);
+			ses->proxyarp = NULL;
+
+			if (net->sock_ioctl(SIOCDARP, (caddr_t)&arpreq))
+				log_ppp_error("failed to delete proxy-arp: %s\n", strerror(errno));
+		}
 	}
 
 	if (ses->ipv6) {
