@@ -21,6 +21,7 @@
 struct host_params {
 	const char *str_addr;
 	const char *str_port;
+	const char *passwd;
 	sa_family_t family;
 	int fd;
 };
@@ -360,11 +361,15 @@ out:
 	return err;
 }
 
-static struct msghdr *argv_to_msghdr(int argc, char * const *argv)
+static struct msghdr *argv_to_msghdr(int argc, char * const *argv, const char *passwd)
 {
 	struct msghdr *mh = NULL;
 	struct iovec *iv = NULL;
-	int indx;
+	int indx, ividx, ivlen;
+
+	ivlen = (argc ? argc * 2 - 1 : 0) + ((passwd && *passwd) ? 2 : 0);
+	if (ivlen == 0)
+		return NULL;
 
 	mh = calloc(1, sizeof(struct msghdr));
 	if (mh == NULL) {
@@ -373,7 +378,7 @@ static struct msghdr *argv_to_msghdr(int argc, char * const *argv)
 			__func__, __LINE__, strerror(errno));
 		return NULL;
 	}
-	iv = calloc(argc * 2 - 1, sizeof(struct iovec));
+	iv = calloc(ivlen, sizeof(struct iovec));
 	if (iv == NULL) {
 		fprintf(stderr, "%s,%i: Impossible to allocate buffer:"
 			" calloc() failed: %s\n",
@@ -382,17 +387,24 @@ static struct msghdr *argv_to_msghdr(int argc, char * const *argv)
 		return NULL;
 	}
 
-	for (indx = 0; indx < argc - 1; ++indx) {
-		iv[indx * 2].iov_base = argv[indx];
-		iv[indx * 2].iov_len = strlen(argv[indx]);
-		iv[indx * 2 + 1].iov_base = " ";
-		iv[indx * 2 + 1].iov_len = 1;
+	ividx = 0;
+	if (passwd && *passwd) {
+		iv[ividx].iov_base = (void *) passwd;
+		iv[ividx++].iov_len = strlen(passwd);
+		iv[ividx].iov_base = "\n";
+		iv[ividx++].iov_len = 1;
 	}
-	iv[indx * 2].iov_base = argv[indx];
-	iv[indx * 2].iov_len = strlen(argv[indx]);
+	for (indx = 0; indx < argc; ++indx) {
+		iv[ividx].iov_base = argv[indx];
+		iv[ividx++].iov_len = strlen(argv[indx]);
+		if (indx == argc - 1)
+			continue;
+		iv[ividx].iov_base = " ";
+		iv[ividx++].iov_len = 1;
+	}
 
 	mh->msg_iov = iv;
-	mh->msg_iovlen = argc * 2 - 1;
+	mh->msg_iovlen = ivlen;
 
 	return mh;
 }
@@ -553,6 +565,7 @@ static void print_help(const char *name)
 	printf("\t-p, --port\t- Set remote port to use for communicating"
 	       " with HOST. Defaults to \"%s\".\n", DEFAULT_PORT);
 	printf("\t-t, --timeout\t- Set inactivity timeout.\n");
+	printf("\t-P, --password\t- Set password for accessing HOST.\n");
 	printf("\t-v, --verbose\t- Verbose output.\n");
 	printf("\t-V, --version\t- Display version number and exit.\n");
 	printf("\t-h, --help\t- Display this help message and exit.\n");
@@ -590,6 +603,11 @@ int main(int argc, char **argv)
 		 .has_arg = required_argument,
 		 .flag = NULL,
 		 .val = 't'
+		},
+		{.name = "password",
+		 .has_arg = required_argument,
+		 .flag = NULL,
+		 .val = 'P'
 		},
 		{.name = "verbose",
 		 .has_arg = no_argument,
@@ -630,7 +648,7 @@ int main(int argc, char **argv)
 	char ochar;
 	int rv;
 
-	while ((ochar = getopt_long(argc, argv, "f:46ni:H:p:t:vVh-",
+	while ((ochar = getopt_long(argc, argv, "f:46ni:H:p:t:P:vVh-",
 				    long_opts, &oindx)) != -1) {
 		if (ochar == '-')
 			/* End of options, interpret the following arguments
@@ -674,6 +692,9 @@ int main(int argc, char **argv)
 				return XSTATUS_BADPARAM;
 			}
 			break;
+		case 'P':
+			peer.passwd = optarg;
+			break;
 		case 'v':
 			verbose = true;
 			break;
@@ -689,15 +710,14 @@ int main(int argc, char **argv)
 		};
 	}
 
-	if (optind < argc) {
-		mh = argv_to_msghdr(argc - optind, argv + optind);
+	if (optind < argc || peer.passwd) {
+		mh = argv_to_msghdr(argc - optind, argv + optind, peer.passwd);
 		if (mh == NULL) {
 			rv = XSTATUS_INTERNAL;
 			goto out;
 		}
-		inputstream = -1;
-	} else
-		inputstream = STDIN_FILENO;
+	}
+	inputstream = (optind < argc) ? -1 : STDIN_FILENO;
 
 	rv = accel_connect(&peer, numeric);
 	if (rv != EXIT_SUCCESS)
