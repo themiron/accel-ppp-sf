@@ -256,8 +256,11 @@ static inline int nsnr_cmp(uint16_t ns, uint16_t nr)
 
 static void l2tp_ctx_switch(struct triton_context_t *ctx, void *arg)
 {
-	struct ap_session *s  = arg;
-	net = s->net;
+	if (arg) {
+		struct ap_session *s = arg;
+		net = s->net;
+	} else
+		net = def_net;
 	log_switch(ctx, arg);
 }
 
