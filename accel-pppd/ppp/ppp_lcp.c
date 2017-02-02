@@ -1,5 +1,7 @@
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <ctype.h>
 #include <sys/socket.h>
 #include <sys/ioctl.h>
 #include <arpa/inet.h>
@@ -760,7 +762,7 @@ static void lcp_recv(struct ppp_handler_t*h)
 	struct lcp_hdr_t *hdr;
 	struct ppp_lcp_t *lcp = container_of(h, typeof(*lcp), hnd);
 	int r;
-	char *term_msg;
+	char *term_msg, *term_str, *term_hex, *src, *dst;
 
 	if (lcp->ppp->buf_size < PPP_HEADERLEN + 2) {
 		log_ppp_warn("LCP: short packet received\n");
@@ -871,9 +873,16 @@ static void lcp_recv(struct ppp_handler_t*h)
 			break;
 		case IDENT:
 			if (conf_ppp_verbose) {
-				term_msg = _strndup((char*)(hdr + 1) + 4, ntohs(hdr->len) - 4 - 4);
+				term_str = src = _strndup((char*)(hdr + 1) + 4, ntohs(hdr->len) - 4 - 4);
+				term_hex = dst = term_str ? _malloc(strlen(term_str)*2 + 1) : NULL;
+				for (term_msg = term_str; src && dst && *src; src++) {
+					if (!isprint(*src))
+						term_msg = term_hex;
+					dst += sprintf(dst, "%02x", *(uint8_t*)src);
+				}
 				log_ppp_info2("recv [LCP Ident id=%x <%s>]\n", hdr->id, term_msg);
-				_free(term_msg);
+				_free(term_str);
+				_free(term_hex);
 			}
 			break;
 		default:
