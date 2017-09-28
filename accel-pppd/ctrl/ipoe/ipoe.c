@@ -125,6 +125,7 @@ static const char *conf_password;
 static int conf_unit_cache;
 static int conf_noauth;
 #ifdef RADIUS
+static int conf_vendor;
 static int conf_attr_dhcp_client_ip;
 static int conf_attr_dhcp_router_ip;
 static int conf_attr_dhcp_mask;
@@ -562,6 +563,9 @@ static int ipoe_create_interface(struct ipoe_session *ses)
 	ses->ses.ifindex = ses->ifindex;
 	ses->ses.unit_idx = ses->ifindex;
 
+	if (ses->serv->opt_mtu)
+		iplink_set_mtu(ses->ses.ifindex, ses->serv->opt_mtu);
+
 	log_ppp_info2("create interface %s parent %s\n", ifr.ifr_name, ses->serv->ifname);
 
 	return 0;
@@ -616,7 +620,6 @@ cont:
 	if (ses->serv->opt_shared == 0 && ses->ses.ipv4 && ses->ses.ipv4->peer_addr != ses->yiaddr) {
 		if (ipoe_create_interface(ses))
 			return;
-
 	}
 
 	ap_session_set_ifindex(&ses->ses);
@@ -858,6 +861,7 @@ static void __ipoe_session_start(struct ipoe_session *ses)
 		ses->siaddr = ses->router;
 
 		if (ses->arph) {
+			ses->wait_start = 1;
 			send_arp_reply(ses->serv, ses->arph);
 			_free(ses->arph);
 			ses->arph = NULL;
@@ -1055,7 +1059,8 @@ static void ipoe_session_started(struct ap_session *s)
 		triton_timer_mod(&ses->timer, 0);
 
 	if (ses->ses.ipv4->peer_addr != ses->yiaddr)
-		ipaddr_add_peer(ses->ses.ifindex, ses->router, ses->yiaddr);
+		//ipaddr_add_peer(ses->ses.ifindex, ses->router, ses->yiaddr); // breaks quagga
+		iproute_add(ses->ses.ifindex, ses->router, ses->yiaddr, 0, conf_proto, 32);
 
 	if (ses->ifindex != -1 && ses->xid) {
 		ses->dhcpv4 = dhcpv4_create(ses->ctrl.ctx, ses->ses.ifname, "");
@@ -1240,6 +1245,12 @@ static struct ipoe_session *ipoe_session_create_dhcpv4(struct ipoe_serv *serv, s
 	struct ipoe_session *ses;
 	int dlen = 0;
 	uint8_t *ptr = NULL;
+
+	if (ap_shutdown)
+		return NULL;
+
+	if (conf_max_sessions && ap_session_stat.active + ap_session_stat.starting >= conf_max_sessions)
+		return NULL;
 
 	ses = ipoe_session_alloc(serv->ifname);
 	if (!ses)
@@ -1884,6 +1895,9 @@ static struct ipoe_session *ipoe_session_create_up(struct ipoe_serv *serv, struc
 	if (ap_shutdown)
 		return NULL;
 
+	if (conf_max_sessions && ap_session_stat.active + ap_session_stat.starting >= conf_max_sessions)
+		return NULL;
+
 	if (l4_redirect_list_check(saddr))
 		return NULL;
 
@@ -2035,11 +2049,10 @@ void ipoe_recv_up(int ifindex, struct ethhdr *eth, struct iphdr *iph, struct _ar
 
 		list_for_each_entry(ses, &serv->sessions, entry) {
 			if (ses->yiaddr == saddr) {
-				if (arph) {
-					if (!ses->arph)
-						send_arp_reply(serv, arph);
-				} else if (!ses->started)
+				if (ses->wait_start) {
+					ses->wait_start = 0;
 					triton_context_call(&ses->ctx, (triton_event_func)__ipoe_session_activate, ses);
+				}
 
 				pthread_mutex_unlock(&serv->lock);
 				pthread_mutex_unlock(&serv_lock);
@@ -2093,13 +2106,13 @@ void ipoe_serv_recv_arp(struct ipoe_serv *serv, struct _arphdr *arph)
 
 static int ipaddr_to_prefix(in_addr_t ipaddr)
 {
-	if (ipaddr == 0xffffffff)
-		return 32;
+	if (ipaddr == 0)
+		return 0;
 
 #if __BYTE_ORDER == __LITTLE_ENDIAN
-	return 31 - ffs(htonl(ipaddr));
+	return 33 - ffs(htonl(ipaddr));
 #else
-	return 31 - ffs(ipaddr);
+	return 33 - ffs(ipaddr);
 #endif
 }
 
@@ -2113,13 +2126,18 @@ static void ev_radius_access_accept(struct ev_radius_t *ev)
 		return;
 
 	list_for_each_entry(attr, &ev->reply->attrs, entry) {
+		int vendor_id = attr->vendor ? attr->vendor->id : 0;
+
+		if (conf_vendor != vendor_id)
+			continue;
+
 		if (attr->attr->id == conf_attr_dhcp_client_ip)
 			ses->yiaddr = attr->val.ipaddr;
 		else if (attr->attr->id == conf_attr_dhcp_router_ip)
 			ses->router = attr->val.ipaddr;
 		else if (attr->attr->id == conf_attr_dhcp_mask) {
 			if (attr->attr->type == ATTR_TYPE_INTEGER) {
-				if (attr->val.integer > 0 && attr->val.integer < 31)
+				if (attr->val.integer > 0 && attr->val.integer <= 32)
 					ses->mask = attr->val.integer;
 			} else if (attr->attr->type == ATTR_TYPE_IPADDR)
 				ses->mask = ipaddr_to_prefix(attr->val.ipaddr);
@@ -2180,8 +2198,9 @@ static void ev_radius_coa(struct ev_radius_t *ev)
 {
 	struct ipoe_session *ses = container_of(ev->ses, typeof(*ses), ses);
 	struct rad_attr_t *attr;
-	int l4_redirect;
+	int l4_redirect = -1;
 	int lease_time_set = 0, renew_time_set = 0;
+	char *ipset = NULL;
 
 	if (ev->ses->ctrl->type != CTRL_TYPE_IPOE)
 		return;
@@ -2189,11 +2208,16 @@ static void ev_radius_coa(struct ev_radius_t *ev)
 	l4_redirect = ses->l4_redirect;
 
 	list_for_each_entry(attr, &ev->request->attrs, entry) {
+		int vendor_id = attr->vendor ? attr->vendor->id : 0;
+
+		if (conf_vendor != vendor_id)
+			continue;
+
 		if (attr->attr->id == conf_attr_l4_redirect) {
 			if (attr->attr->type == ATTR_TYPE_STRING)
-				ses->l4_redirect = attr->len && attr->val.string[0] != '0';
+				l4_redirect = attr->len && attr->val.string[0] != '0';
 			else
-				ses->l4_redirect = ((unsigned int)attr->val.integer) > 0;
+				l4_redirect = ((unsigned int)attr->val.integer) > 0;
 		} else if (strcmp(attr->attr->name, "Framed-IP-Address") == 0) {
 			if (ses->ses.ipv4 && ses->ses.ipv4->peer_addr != attr->val.ipaddr)
 				ipoe_change_addr(ses, attr->val.ipaddr);
@@ -2207,10 +2231,8 @@ static void ev_radius_coa(struct ev_radius_t *ev)
 			ses->l4_redirect_table = attr->val.integer;
 		else if (attr->attr->id == conf_attr_l4_redirect_ipset) {
 			if (attr->attr->type == ATTR_TYPE_STRING) {
-				if (ses->l4_redirect_ipset && strcmp(ses->l4_redirect_ipset, attr->val.string)) {
-					_free(ses->l4_redirect_ipset);
-					ses->l4_redirect_ipset = _strdup(attr->val.string);
-				}
+				if (!ses->l4_redirect_ipset || strcmp(ses->l4_redirect_ipset, attr->val.string))
+					ipset = attr->val.string;
 			}
 		}
 	}
@@ -2222,9 +2244,23 @@ static void ev_radius_coa(struct ev_radius_t *ev)
 		ses->renew_time = ses->lease_time / 2;
 	}
 
-	//if (l4_redirect && !ses->l4_redirect) || (!l4_redirect && ses->l4_redirect))
-	if (l4_redirect != ses->l4_redirect && ev->ses->state == AP_STATE_ACTIVE)
-		ipoe_change_l4_redirect(ses, l4_redirect);
+	if (l4_redirect >= 0 && ev->ses->state == AP_STATE_ACTIVE) {
+		if (ses->l4_redirect && l4_redirect && ipset) {
+			ipoe_change_l4_redirect(ses, 1);
+			ses->l4_redirect = 0;
+		}
+
+		if (ipset) {
+			if (ses->l4_redirect_ipset)
+				_free(ses->l4_redirect_ipset);
+			ses->l4_redirect_ipset = _strdup(ipset);
+		}
+
+		if (l4_redirect != ses->l4_redirect ) {
+			ipoe_change_l4_redirect(ses, l4_redirect == 0);
+			ses->l4_redirect = l4_redirect;
+		}
+	}
 }
 
 static int ipoe_rad_send_acct_request(struct rad_plugin_t *rad, struct rad_packet_t *pack)
@@ -2626,6 +2662,7 @@ static void add_interface(const char *ifname, int ifindex, const char *opt, int 
 	int opt_username = conf_username;
 	int opt_ipv6 = conf_ipv6;
 	int opt_auto = conf_auto;
+	int opt_mtu = 0;
 #ifdef USE_LUA
 	char *opt_lua_username_func = NULL;
 #endif
@@ -2693,6 +2730,8 @@ static void add_interface(const char *ifname, int ifindex, const char *opt, int 
 				opt_arp = atoi(ptr1);
 			} else if (strcmp(str, "ipv6") == 0) {
 				opt_ipv6 = atoi(ptr1);
+			} else if (strcmp(str, "mtu") == 0) {
+				opt_mtu = atoi(ptr1);
 			} else if (strcmp(str, "username") == 0) {
 				if (strcmp(ptr1, "ifname") == 0)
 					opt_username = USERNAME_IFNAME;
@@ -2783,6 +2822,11 @@ static void add_interface(const char *ifname, int ifindex, const char *opt, int 
 			serv->arp = NULL;
 		} else if (!serv->arp && opt_arp)
 			serv->arp = arpd_start(serv);
+
+		if (serv->opt_mtu != opt_mtu && opt_mtu) {
+			iplink_set_mtu(serv->ifindex, opt_mtu);
+			serv->opt_mtu = opt_mtu;
+		}
 
 		serv->opt_up = opt_up;
 		serv->opt_auto = opt_auto;
@@ -2877,10 +2921,12 @@ static void add_interface(const char *ifname, int ifindex, const char *opt, int 
 	serv->opt_arp = opt_arp;
 	serv->opt_username = opt_username;
 	serv->opt_ipv6 = opt_ipv6;
+	serv->opt_mtu = opt_mtu;
 #ifdef USE_LUA
 	serv->opt_lua_username_func = opt_lua_username_func;
 #endif
 	serv->parent_ifindex = parent_ifindex;
+	serv->parent_vid = parent_ifindex ? iplink_vlan_get_vid(parent_ifindex, NULL) : 0;
 	serv->vid = vid;
 	serv->active = 1;
 	INIT_LIST_HEAD(&serv->sessions);
@@ -2908,6 +2954,9 @@ static void add_interface(const char *ifname, int ifindex, const char *opt, int 
 		serv->vlan_mon = 1;
 		set_vlan_timeout(serv);
 	}
+
+	if (opt_mtu)
+		iplink_set_mtu(ifindex, opt_mtu);
 
 	if (serv->opt_auto && !serv->opt_shared)
 		triton_context_call(&serv->ctx, (triton_event_func)ipoe_session_create_auto, serv);
@@ -3092,25 +3141,43 @@ static void parse_conf_rad_attr(const char *opt, int *val)
 {
 	struct rad_dict_attr_t *attr;
 
-	opt = conf_get_opt("ipoe", opt);
-
 	*val = 0;
 
-	if (opt) {
-		if (atoi(opt) > 0)
-			*val = atoi(opt);
-		else {
-			attr = rad_dict_find_attr(opt);
-			if (attr)
-				*val = attr->id;
-			else
-				log_emerg("ipoe: couldn't find '%s' in dictionary\n", opt);
-		}
-	}
+	opt = conf_get_opt("ipoe", opt);
+	if (!opt)
+		return;
+
+	if (conf_vendor) {
+		struct rad_dict_vendor_t *vendor = rad_dict_find_vendor_id(conf_vendor);
+		attr = rad_dict_find_vendor_attr(vendor, opt);
+	} else
+		attr = rad_dict_find_attr(opt);
+
+	if (attr)
+		*val = attr->id;
+	else if (atoi(opt) > 0)
+		*val = atoi(opt);
+	else
+		log_emerg("ipoe: couldn't find '%s' in dictionary\n", opt);
 }
 
 static void load_radius_attrs(void)
 {
+	const char *vendor = conf_get_opt("ipoe", "vendor");
+
+	if (vendor) {
+		struct rad_dict_vendor_t *v = rad_dict_find_vendor_name(vendor);
+		if (v)
+			conf_vendor = v->id;
+		else {
+			conf_vendor = atoi(vendor);
+			if (!rad_dict_find_vendor_id(conf_vendor)) {
+				conf_vendor = 0;
+				log_emerg("ipoe: vendor '%s' not found\n", vendor);
+			}
+		}
+	}
+
 	parse_conf_rad_attr("attr-dhcp-client-ip", &conf_attr_dhcp_client_ip);
 	parse_conf_rad_attr("attr-dhcp-router-ip", &conf_attr_dhcp_router_ip);
 	parse_conf_rad_attr("attr-dhcp-mask", &conf_attr_dhcp_mask);

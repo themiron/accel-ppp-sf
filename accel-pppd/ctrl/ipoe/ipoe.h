@@ -53,6 +53,7 @@ struct ipoe_serv {
 	uint32_t opt_src;
 	int opt_arp;
 	int opt_username;
+	int opt_mtu;
 #ifdef USE_LUA
 	char *opt_lua_username_func;
 #endif
@@ -112,6 +113,7 @@ struct ipoe_session {
 	int l4_redirect_set:1;
 	int terminate:1;
 	int UP:1;
+	int wait_start:1;
 };
 
 struct ipoe_session_info {
