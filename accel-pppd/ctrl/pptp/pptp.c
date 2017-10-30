@@ -62,6 +62,7 @@ static int conf_echo_failure = 3;
 static int conf_verbose = 0;
 static int conf_mppe = MPPE_UNSET;
 static const char *conf_ip_pool;
+static const char *conf_ifname;
 static int conf_proxyarp = 0;
 
 static mempool_t conn_pool;
@@ -708,6 +709,8 @@ static int pptp_connect(struct triton_md_handler_t *h)
 
 		if (conf_ip_pool)
 			conn->ppp.ses.ipv4_pool_name = _strdup(conf_ip_pool);
+		if (conf_ifname)
+			conn->ppp.ses.ifname_rename = _strdup(conf_ifname);
 
 		triton_context_register(&conn->ctx, &conn->ppp.ses);
 		triton_md_register_handler(&conn->ctx, &conn->hnd);
@@ -790,6 +793,7 @@ static void load_config(void)
 	}
 
 	conf_ip_pool = conf_get_opt("pptp", "ip-pool");
+	conf_ifname = conf_get_opt("pptp", "ifname");
 
 	opt = conf_get_opt("pptp", "proxy-arp") ? : conf_get_opt("ppp", "proxy-arp");
 	if (opt && atoi(opt) >= 0)

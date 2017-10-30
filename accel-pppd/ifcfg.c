@@ -403,9 +403,16 @@ int __export ap_session_rename(struct ap_session *ses, const char *ifname, int l
 			else
 				log_ppp_warn("interface rename to %s failed: %s\n", ifr.ifr_newname, strerror(errno));
 		} else {
+			/* required since 2.6.27 */
+			if (strchr(ifr.ifr_newname, '%')) {
+				ifr.ifr_ifindex = ses->ifindex;
+				r = net->sock_ioctl(SIOCGIFNAME, &ifr);
+				if (!r)
+					memcpy(ifr.ifr_newname, ifr.ifr_name, IFNAMSIZ);
+			}
+
 			log_ppp_info2("rename interface to '%s'\n", ifr.ifr_newname);
-			memcpy(ses->ifname, ifname, len);
-			ses->ifname[len] = 0;
+			snprintf(ses->ifname, IFNAMSIZ, ifr.ifr_newname);
 		}
 	}
 
