@@ -139,7 +139,8 @@ static void ipv6_nd_send_ra(struct ipv6_nd_handler_t *h, struct sockaddr_in6 *ad
 				((a->flag_auto || (conf_AdvPrefixAutonomousFlag && a->prefix_len == 64)) ? ND_OPT_PI_FLAG_AUTO : 0);
 			pinfo->nd_opt_pi_valid_time = htonl(conf_AdvPrefixValidLifetime);
 			pinfo->nd_opt_pi_preferred_time = htonl(conf_AdvPrefixPreferredLifetime);
-			memcpy(&pinfo->nd_opt_pi_prefix, &a->addr, 8);
+			memcpy(&pinfo->nd_opt_pi_prefix, &a->addr, (a->prefix_len + 7) / 8);
+			pinfo->nd_opt_pi_prefix.s6_addr[a->prefix_len / 8] &= ~(0xff >> (a->prefix_len % 8));
 			pinfo++;
 		}
 
