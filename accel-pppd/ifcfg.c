@@ -408,12 +408,23 @@ int __export ap_session_rename(struct ap_session *ses, const char *ifname, int l
 			if (strchr(ifr.ifr_newname, '%')) {
 				ifr.ifr_ifindex = ses->ifindex;
 				r = net->sock_ioctl(SIOCGIFNAME, &ifr);
-				if (!r)
-					memcpy(ifr.ifr_newname, ifr.ifr_name, IFNAMSIZ);
-			}
+				if (r) {
+					log_ppp_error("failed to get new interface name: %s\n", strerror(errno));
+					return -1;
+				}
+				len = strnlen(ifr.ifr_name, IFNAMSIZ);
+				if (len >= IFNAMSIZ) {
+					log_ppp_error("cannot rename interface (name is too long)\n");
+					return -1;
+				}
+				ifr.ifr_name[len] = 0;
+				ifname = ifr.ifr_name;
+			} else
+				ifname = ifr.ifr_newname;
 
-			log_ppp_info2("rename interface to '%s'\n", ifr.ifr_newname);
-			snprintf(ses->ifname, IFNAMSIZ, ifr.ifr_newname);
+			log_ppp_info2("rename interface to '%s'\n", ifname);
+			memcpy(ses->ifname, ifname, len);
+			ses->ifname[len] = 0;
 		}
 	}
 
