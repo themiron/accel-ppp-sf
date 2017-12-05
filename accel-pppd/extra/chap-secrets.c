@@ -307,7 +307,12 @@ static struct ipv4db_item_t *get_ip(struct ap_session *ses)
 	if (!pd)
 		return NULL;
 
-	if (!pd->ip.peer_addr)
+	if (pd->pool) {
+		if (ses->ipv4_pool_name)
+			_free(ses->ipv4_pool_name);
+		ses->ipv4_pool_name = _strdup(pd->pool);
+		return NULL;
+	} else if (!pd->ip.peer_addr)
 		return NULL;
 
 	if (!ses->ctrl->ppp)
@@ -330,12 +335,6 @@ static char* get_passwd(struct pwdb_t *pwdb, struct ap_session *ses, const char 
 
 	if (!pd)
 		return NULL;
-
-	if (pd->pool) {
-		if (ses->ipv4_pool_name)
-			_free(ses->ipv4_pool_name);
-		ses->ipv4_pool_name = _strdup(pd->pool);
-	}
 
 	return _strdup(pd->passwd);
 }
@@ -672,12 +671,6 @@ static int check_passwd(struct pwdb_t *pwdb, struct ap_session *ses, pwdb_callba
 	}
 
 	va_end(args);
-
-	if (pd->pool) {
-		if (ses->ipv4_pool_name)
-			_free(ses->ipv4_pool_name);
-		ses->ipv4_pool_name = _strdup(pd->pool);
-	}
 
 	return r;
 }
