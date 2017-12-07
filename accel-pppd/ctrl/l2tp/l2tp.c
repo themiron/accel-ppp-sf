@@ -1799,7 +1799,6 @@ static int l2tp_session_start_data_channel(struct l2tp_sess_t *sess)
 			goto err;
 		}
 	}
-
 	if (conf_ifname)
 		sess->ppp.ses.ifname_rename = _strdup(conf_ifname);
 

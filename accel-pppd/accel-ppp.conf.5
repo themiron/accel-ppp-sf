@@ -628,14 +628,14 @@ establishment request. When this option is deactivated, the destination
 port of the incoming request (SCCRQ) is used as source port for the
 reply (SCCRP). Default value is 0.
 .TP
+.BI "ppp-max-mtu=" n
+Set the maximun MTU value that can be negociated for PPP over L2TP
+sessions. Default value is 1420.
+.TP
 .BI "ifname=" ifname
 If this option is given ppp interface will be renamed using
 .B ifname
 as a template, i.e l2tp%d => l2tp0.
-.TP
-.BI "ppp-max-mtu=" n
-Set the maximun MTU value that can be negociated for PPP over L2TP
-sessions. Default value is 1420.
 .TP
 .BI "proxy-arp=" 0|1
 Overrides [ppp] parameter, if set.
