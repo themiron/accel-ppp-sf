@@ -111,9 +111,9 @@ static void config_reload(int num)
 static void close_all_fd(void)
 {
 	DIR *dirp;
-	struct dirent ent, *res;
+	struct dirent *ent;
 	char path[128];
-	int fd;
+	int fd, dir_fd;
 
 	sprintf(path, "/proc/%u/fd", getpid());
 
@@ -121,14 +121,15 @@ static void close_all_fd(void)
 	if (!dirp)
 		return;
 
+	dir_fd = dirfd(dirp);
+
 	while (1) {
-		if (readdir_r(dirp, &ent, &res))
-			return;
-		if (!res)
+		ent = readdir(dirp);
+		if (!ent)
 			break;
 
-		fd = atol(ent.d_name);
-		if (fd > 2)
+		fd = atol(ent->d_name);
+		if (fd > 2 && fd != dir_fd)
 			close(fd);
 	}
 
@@ -228,6 +229,11 @@ static void shutdown_cb()
 	pthread_mutex_unlock(&lock);
 }
 
+static void log_version()
+{
+	log_msg("accel-ppp version %s\n", ACCEL_PPP_VERSION);
+}
+
 int main(int _argc, char **_argv)
 {
 	sigset_t set;
@@ -311,13 +317,12 @@ int main(int _argc, char **_argv)
 	openssl_init();
 #endif
 
+	triton_register_init(0, log_version);
+
 	if (triton_load_modules("modules"))
 		return EXIT_FAILURE;
 
-	log_msg("accel-ppp version %s\n", ACCEL_PPP_VERSION);
-
 	triton_run();
-
 
 	sigfillset(&set);
 
