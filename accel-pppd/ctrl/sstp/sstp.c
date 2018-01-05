@@ -163,6 +163,7 @@ static int conf_verbose = 0;
 static int conf_ppp_max_mtu = 1452;
 static const char *conf_ip_pool;
 static const char *conf_ifname;
+static int conf_proxyarp = 0;
 
 static int conf_hash_protocol = CERT_HASH_PROTOCOL_SHA1 | CERT_HASH_PROTOCOL_SHA256;
 static struct hash_t conf_hash_sha1 = { .len = 0 };
@@ -1871,6 +1872,8 @@ static int sstp_connect(struct triton_md_handler_t *h)
 		conn->ctrl.name = "sstp";
 		conn->ctrl.ifname = "";
 		conn->ctrl.mppe = MPPE_UNSET;
+		conn->ctrl.proxyarp = conf_proxyarp;
+
 		conn->ctrl.calling_station_id = _malloc(sizeof("255.255.255.255:65535"));
 		conn->ctrl.called_station_id = _malloc(sizeof("255.255.255.255"));
 		sprintf(conn->ctrl.calling_station_id, "%s:%d",
@@ -2121,6 +2124,10 @@ static void load_config(void)
 
 	conf_ip_pool = conf_get_opt("sstp", "ip-pool");
 	conf_ifname = conf_get_opt("sstp", "ifname");
+
+	opt = conf_get_opt("sstp", "proxy-arp") ? : conf_get_opt("ppp", "proxy-arp");
+	if (opt && atoi(opt) >= 0)
+		conf_proxyarp = atoi(opt) > 0;
 
 	switch (iprange_check_activation()) {
 	case IPRANGE_DISABLED:
