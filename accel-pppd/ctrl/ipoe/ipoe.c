@@ -731,6 +731,18 @@ static void find_gw_addr(struct ipoe_session *ses)
 	}
 }
 
+static int check_server_id(in_addr_t addr)
+{
+	struct gw_addr *a;
+
+	list_for_each_entry(a, &conf_gw_addr, entry) {
+		if (a->addr == addr)
+			return 1;
+	}
+
+	return 0;
+}
+
 static void send_arp_reply(struct ipoe_serv *serv, struct _arphdr *arph)
 {
 	__be32 tpa = arph->ar_tpa;
@@ -951,7 +963,8 @@ static void __ipoe_session_activate(struct ipoe_session *ses)
 		if (!ses->ses.ipv6)
 			log_ppp_warn("ipoe: no free IPv6 address\n");
 		else {
-			make_ipv6_intfid(&ses->ses.ipv6->peer_intf_id, ses->hwaddr);
+			if (!ses->ses.ipv6->peer_intf_id)
+				make_ipv6_intfid(&ses->ses.ipv6->peer_intf_id, ses->hwaddr);
 			make_ipv6_intfid(&ses->ses.ipv6->intf_id, ses->serv->hwaddr);
 		}
 	}
@@ -1588,7 +1601,7 @@ static void ipoe_serv_add_disc(struct ipoe_serv *serv, struct dhcpv4_packet *pac
 	}
 }
 
-static void ipoe_serv_check_disc(struct ipoe_serv *serv, struct dhcpv4_packet *pack)
+static int ipoe_serv_check_disc(struct ipoe_serv *serv, struct dhcpv4_packet *pack)
 {
 	struct disc_item *d;
 
@@ -1605,8 +1618,10 @@ static void ipoe_serv_check_disc(struct ipoe_serv *serv, struct dhcpv4_packet *p
 
 		__sync_sub_and_fetch(&stat_delayed_offer, 1);
 
-		break;
+		return 1;
 	}
+
+	return 0;
 }
 
 static int ipoe_serv_request_check(struct ipoe_serv *serv, uint32_t xid)
@@ -1619,7 +1634,10 @@ static int ipoe_serv_request_check(struct ipoe_serv *serv, uint32_t xid)
 
 	list_for_each_safe(pos, n, &serv->req_list) {
 		r = list_entry(pos, typeof(*r), entry);
-		if (r->xid == xid) {
+		if (ts.tv_sec > r->expire) {
+			list_del(&r->entry);
+			mempool_free(r);
+		} else if (r->xid == xid) {
 			if (++r->cnt == conf_max_request) {
 				list_del(&r->entry);
 				mempool_free(r);
@@ -1628,11 +1646,6 @@ static int ipoe_serv_request_check(struct ipoe_serv *serv, uint32_t xid)
 
 			r->expire = ts.tv_sec + 30;
 			return 0;
-		}
-
-		if (ts.tv_sec > r->expire) {
-			list_del(&r->entry);
-			mempool_free(r);
 		}
 	}
 
@@ -1768,7 +1781,8 @@ static void __ipoe_recv_dhcpv4(struct dhcpv4_serv *dhcpv4, struct dhcpv4_packet 
 			triton_context_call(&ses->ctx, (triton_event_func)ipoe_ses_recv_dhcpv4_discover, pack);
 		}
 	} else if (pack->msg_type == DHCPREQUEST) {
-		ipoe_serv_check_disc(serv, pack);
+		if (ipoe_serv_check_disc(serv, pack))
+			goto out;
 
 		ses = ipoe_session_lookup(serv, pack, &opt82_ses);
 
@@ -1778,15 +1792,24 @@ static void __ipoe_recv_dhcpv4(struct dhcpv4_serv *dhcpv4, struct dhcpv4_packet 
 				dhcpv4_print_packet(pack, 0, log_debug);
 			}
 
-			if (!pack->server_id)
+			if (pack->src_addr) {
 				dhcpv4_send_nak(dhcpv4, pack);
+				goto out;
+			}
+
+			if (pack->server_id) {
+				if (check_server_id(pack->server_id)) {
+					dhcpv4_send_nak(dhcpv4, pack);
+					goto out;
+				}
+			}
 
 			if (serv->opt_shared == 0)
 				ipoe_drop_sessions(serv, NULL);
 			else if (opt82_ses) {
 				dhcpv4_packet_ref(pack);
 				triton_context_call(&opt82_ses->ctx, (triton_event_func)mac_change_detected, pack);
-			} else if (list_empty(&conf_offer_delay) || ipoe_serv_request_check(serv, pack->hdr->xid))
+			} else if (ipoe_serv_request_check(serv, pack->hdr->xid))
 				dhcpv4_send_nak(dhcpv4, pack);
 		} else {
 			if (ses->terminate) {
@@ -2172,6 +2195,7 @@ static void ev_radius_access_accept(struct ev_radius_t *ev)
 	struct ipoe_session *ses = container_of(ev->ses, typeof(*ses), ses);
 	struct rad_attr_t *attr;
 	int lease_time_set = 0, renew_time_set = 0, has_dhcp = 0;
+	in_addr_t server_id = 0;
 
 	if (ev->ses->ctrl->type != CTRL_TYPE_IPOE)
 		return;
@@ -2202,6 +2226,9 @@ static void ev_radius_access_accept(struct ev_radius_t *ev)
 				case DHCP_Renewal_Time:
 					ses->renew_time = attr->val.integer;
 					renew_time_set = 1;
+					break;
+				case DHCP_DHCP_Server_Identifier:
+					server_id = attr->val.ipaddr;
 					break;
 			}
 
@@ -2247,6 +2274,9 @@ static void ev_radius_access_accept(struct ev_radius_t *ev)
 		log_ppp_warn("ipoe: overriding renew time\n");
 		ses->renew_time = ses->lease_time / 2;
 	}
+
+	if (!ses->siaddr)
+		ses->siaddr = server_id;
 
 	if (has_dhcp)
 		ses->dhcpv4_relay_reply = dhcpv4_clone_radius(ev->reply);
